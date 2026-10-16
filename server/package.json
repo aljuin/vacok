@@ -1,0 +1,9 @@
+{
+  "name": "messenger-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Сервер мессенджера (Node.js 22.13+, без зависимостей)",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=22.13" }
+}

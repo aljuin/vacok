@@ -1,0 +1,18 @@
+[Unit]
+Description=Мессенджер (Node.js)
+After=network.target
+
+[Service]
+User=messenger
+WorkingDirectory=/opt/messenger/server
+ExecStart=/usr/bin/node /opt/messenger/server/server.js
+Environment=PORT=3000
+Environment=DATA_DIR=/opt/messenger/data
+Environment=ALLOW_ORIGIN=https://messenger.example.com,https://appassets.androidplatform.net
+Environment=MAX_UPLOAD_MB=80
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

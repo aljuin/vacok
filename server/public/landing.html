@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>vacok</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #15161B; color: #F2F3F7;
+    display: flex; align-items: center; justify-content: center;
+    padding: env(safe-area-inset-top) 20px env(safe-area-inset-bottom);
+  }
+  main { width: 100%; max-width: 360px; text-align: center; }
+  .logo { width: 84px; height: 84px; border-radius: 26px; margin: 0 auto 22px;
+          background: linear-gradient(135deg, #4C8DFF, #7B5CFF);
+          display: grid; place-items: center; font-size: 40px; }
+  h1 { font-size: 28px; margin: 0 0 10px; font-weight: 700; }
+  p { color: #9AA0AE; line-height: 1.5; margin: 0 0 28px; font-size: 16px; }
+  .btn { display: block; width: 100%; padding: 16px; border-radius: 16px; text-decoration: none;
+         font-size: 17px; font-weight: 600; color: #fff; background: #4C8DFF;
+         transition: transform .15s ease; }
+  .btn:active { transform: scale(.97); }
+  .btn.ghost { background: #23252D; color: #F2F3F7; margin-top: 12px; }
+  .steps { text-align: left; margin: 26px 0 0; padding: 0; list-style: none; color: #9AA0AE; font-size: 14px; line-height: 1.6; }
+  .steps li { margin-bottom: 6px; }
+  .steps b { color: #F2F3F7; }
+</style>
+</head>
+<body>
+<main>
+  <div class="logo">💬</div>
+  <h1>Мессенджер</h1>
+  <p>Быстрые сообщения, фото, видео и голосовые. Регистрация по логину и короткому имени.</p>
+  <a class="btn" href="/download/messenger.apk">Скачать для Android</a>
+  <a class="btn ghost" href="/app">Открыть в браузере</a>
+  <ol class="steps">
+    <li><b>1.</b> Нажмите «Скачать» и откройте файл messenger.apk.</li>
+    <li><b>2.</b> Если телефон спросит, разрешите установку из этого источника.</li>
+    <li><b>3.</b> Откройте приложение, зарегистрируйтесь и напишите первому контакту.</li>
+  </ol>
+</main>
+</body>
+</html>
