@@ -36,7 +36,12 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.webkit.WebViewAssetLoader
+import android.webkit.MimeTypeMap
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
 
 /**
  * Оболочка: показывает веб-интерфейс мессенджера (assets/index.html) во весь экран.
@@ -84,8 +89,17 @@ class MainActivity : AppCompatActivity() {
         if (ok.isEmpty()) req.deny() else req.grant(ok.toTypedArray())
     }
 
-    private val notifPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private var pickPurpose = "chat"
+
+    private val pickLauncher =
+        registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(20)) { uris ->
+            deliverPicked(uris, pickPurpose)
+        }
+
+    private val startupPermissions =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            if (Session.load(this) != null) startSync()
+        }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -114,13 +128,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         createChannel()
-        askNotificationPermission()
+        askStartupPermissions()
+        if (Session.load(this) != null) startSync()
 
         val server = BuildConfig.SERVER_URL.trim().trimEnd('/')
         if (server.isNotEmpty()) Uri.parse(server).host?.let { allowedHosts.add(it) }
 
+        val pickedDir = File(cacheDir, "picked").apply { mkdirs() }
         val loader = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .addPathHandler("/picked/", WebViewAssetLoader.InternalStoragePathHandler(this, pickedDir))
             .build()
 
         web = WebView(this).apply {
@@ -254,12 +271,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        inForeground = false
         web.onPause()
         super.onPause()
     }
 
     override fun onResume() {
         super.onResume()
+        inForeground = true
         web.onResume()
     }
 
@@ -286,13 +305,59 @@ class MainActivity : AppCompatActivity() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
     }
 
-    private fun askNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    private fun askStartupPermissions() {
+        val wanted = mutableListOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33) {
+            wanted += Manifest.permission.POST_NOTIFICATIONS
+            wanted += Manifest.permission.READ_MEDIA_IMAGES
+            wanted += Manifest.permission.READ_MEDIA_VIDEO
+        } else {
+            wanted += Manifest.permission.READ_EXTERNAL_STORAGE
         }
+        val missing = wanted.filter { !hasPermission(it) }
+        if (missing.isNotEmpty()) startupPermissions.launch(missing.toTypedArray())
+    }
+
+    private fun startSync() {
+        try {
+            ContextCompat.startForegroundService(this, Intent(this, SyncService::class.java))
+        } catch (e: Exception) {
+            // служба запустится при следующем открытии приложения
+        }
+    }
+
+    /** Копирует выбранные в галерее файлы в кэш и передаёт странице ссылки на них */
+    private fun deliverPicked(uris: List<Uri>, purpose: String) {
+        if (uris.isEmpty()) return
+        Thread {
+            val dir = File(cacheDir, "picked").apply { mkdirs() }
+            dir.listFiles()?.forEach { it.delete() }
+            val out = JSONArray()
+            uris.forEachIndexed { idx, uri ->
+                try {
+                    val mime = contentResolver.getType(uri) ?: "application/octet-stream"
+                    val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "bin"
+                    val name = "p" + System.currentTimeMillis() + "_" + idx + "." + ext
+                    val file = File(dir, name)
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        file.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    if (file.length() > 0) {
+                        out.put(
+                            JSONObject()
+                                .put("url", "https://$appHost/picked/$name")
+                                .put("name", name)
+                                .put("mime", mime)
+                        )
+                    }
+                } catch (e: Exception) {
+                    // файл не удалось прочитать — остальные всё равно отправим
+                }
+            }
+            runOnUiThread {
+                web.evaluateJavascript("window.__picked&&window.__picked($out,'$purpose')", null)
+            }
+        }.start()
     }
 
     @SuppressLint("MissingPermission")
@@ -334,6 +399,35 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread { applyTheme(dark) }
         }
 
+        /** Открывает системную галерею. kind: image | video, purpose: chat | ava */
+        @JavascriptInterface
+        fun pickMedia(kind: String, purpose: String) {
+            runOnUiThread {
+                pickPurpose = purpose
+                val type = if (kind == "video") ActivityResultContracts.PickVisualMedia.VideoOnly
+                else ActivityResultContracts.PickVisualMedia.ImageOnly
+                pickLauncher.launch(PickVisualMediaRequest(type))
+            }
+        }
+
+        /** Сохраняет вход и запускает фоновую службу, которая присылает уведомления */
+        @JavascriptInterface
+        fun setSession(server: String, token: String, uid: String) {
+            runOnUiThread {
+                if (server.isBlank() || token.isBlank() || uid.isBlank()) return@runOnUiThread
+                Session.save(this@MainActivity, server.trimEnd('/'), token, uid)
+                startSync()
+            }
+        }
+
+        @JavascriptInterface
+        fun clearSession() {
+            runOnUiThread {
+                Session.clear(this@MainActivity)
+                stopService(Intent(this@MainActivity, SyncService::class.java))
+            }
+        }
+
         /** Текущая версия установленного приложения (versionCode) */
         @JavascriptInterface
         fun appVersionCode(): Int = BuildConfig.VERSION_CODE
@@ -346,6 +440,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        @Volatile var inForeground = false
         private const val CHANNEL = "messages"
         private val BG_DARK = Color.parseColor("#15161B")
         private val BG_LIGHT = Color.parseColor("#EEF1F6")
