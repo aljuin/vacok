@@ -35,13 +35,16 @@ const Q = sql => { let st = stmtCache.get(sql); if (!st) { st = db.prepare(sql);
 db.exec('PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=3000; PRAGMA temp_store=MEMORY;');
 // Миграция: ответы на сообщения (цитата). Для уже существующей базы колонка добавляется один раз.
 try { db.exec('ALTER TABLE messages ADD COLUMN reply TEXT'); } catch (_) { /* колонка уже есть */ }
+try { db.exec('ALTER TABLE users ADD COLUMN avatar TEXT'); } catch (_) { /* колонка уже есть */ }
+try { db.exec('ALTER TABLE users ADD COLUMN avatar_v INTEGER'); } catch (_) { /* колонка уже есть */ }
+try { db.exec('ALTER TABLE messages ADD COLUMN rx TEXT'); } catch (_) { /* колонка уже есть */ }
 
 const LOGIN_RE = /^[\w.\-а-яё]{3,20}$/i, HANDLE_RE = /^[a-z][a-z0-9_]{2,19}$/;
 const ipOf = req => {
   const ra = req.socket.remoteAddress || '', xf = req.headers['x-forwarded-for'];
   return (ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1') && xf ? String(xf).split(',')[0].trim() : ra;
 };
-const pub = u => ({ id: u.id, login: u.login, handle: u.handle, name: u.name || u.login });
+const pub = u => ({ id: u.id, login: u.login, handle: u.handle, name: u.name || u.login, av: u.avatar ? '/api/avatar/' + u.id + '?v=' + (u.avatar_v || 0) : null });
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 const hashPw = (pw, salt) => crypto.scryptSync(pw, salt, 32).toString('hex');
 const safeEq = (a, b) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && crypto.timingSafeEqual(x, y); };
@@ -230,7 +233,7 @@ const routes = {
     const messages = rows.map(r => {
       const pid = r.from_id === me.id ? r.to_id : r.from_id;
       if (!peers[pid]) { const u = Q('SELECT * FROM users WHERE id=?').get(pid); if (u) peers[pid] = { ...pub(u), online: isOnline(pid) }; }
-      return { id: r.id, from: r.from_id, to: r.to_id, cid: r.cid, kind: r.kind, text: r.text, media: r.media ? JSON.parse(r.media) : null, ts: r.ts, reply: r.reply ? JSON.parse(r.reply) : undefined };
+      return { id: r.id, from: r.from_id, to: r.to_id, cid: r.cid, kind: r.kind, text: r.text, media: r.media ? JSON.parse(r.media) : null, ts: r.ts, reply: r.reply ? JSON.parse(r.reply) : undefined, rx: r.rx ? JSON.parse(r.rx) : undefined };
     });
     const reads = Q('SELECT to_id by, MAX(id) upTo FROM messages WHERE from_id=? AND read_at IS NOT NULL GROUP BY to_id').all(me.id);
     send(res, 200, { messages, peers, reads: reads.map(r => ({ by: r.by, upTo: r.upTo })), more });
@@ -268,6 +271,31 @@ const routes = {
     });
     out.on('error', () => { if (!aborted) fail(res, 500, 'Не удалось сохранить файл'); });
   },
+  async 'POST /api/avatar'(req, res, me) {
+    const rid = String((await readJson(req)).rid || '');
+    const f = Q('SELECT * FROM media WHERE id=? AND owner=?').get(rid, me.id);
+    if (!f || !/^image\//.test(f.mime)) return fail(res, 400, 'Выберите фото');
+    Q('UPDATE users SET avatar=?, avatar_v=? WHERE id=?').run(rid, Date.now(), me.id);
+    const u = Q('SELECT * FROM users WHERE id=?').get(me.id);
+    for (const p of peersOf(me.id)) emit(p, 'user', { user: pub(u) });
+    send(res, 200, { user: pub(u) });
+  },
+  async 'POST /api/react'(req, res, me) {
+    const b = await readJson(req), id = +b.id, em = String(b.emoji || '');
+    const ALLOWED = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+    if (!ALLOWED.includes(em)) return fail(res, 400, 'Недопустимая реакция');
+    const m = Q('SELECT * FROM messages WHERE id=? AND (from_id=? OR to_id=?)').get(id, me.id, me.id);
+    if (!m) return fail(res, 404, 'Сообщение не найдено');
+    const rx = m.rx ? JSON.parse(m.rx) : {};
+    const arr = rx[em] || [];
+    const k = arr.indexOf(me.id);
+    if (k >= 0) arr.splice(k, 1); else arr.push(me.id);
+    if (arr.length) rx[em] = arr; else delete rx[em];
+    Q('UPDATE messages SET rx=? WHERE id=?').run(JSON.stringify(rx), id);
+    emit(m.from_id, 'react', { id, rx });
+    emit(m.to_id, 'react', { id, rx });
+    send(res, 200, { rx });
+  },
   async 'GET /api/stream'(req, res, me) {
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
     req.socket.setTimeout(0); req.socket.setNoDelay(true);
@@ -290,6 +318,14 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   const url = new URL(req.url, 'http://x');
   try {
+    if (url.pathname.startsWith('/api/avatar/') && req.method === 'GET') {
+      const uid = +url.pathname.slice(12);
+      const u = Q('SELECT * FROM users WHERE id=?').get(uid);
+      const f = u && u.avatar ? Q('SELECT * FROM media WHERE id=?').get(u.avatar) : null;
+      if (!f) return fail(res, 404, 'Нет аватара');
+      res.writeHead(200, { 'Content-Type': f.mime, 'Content-Length': f.size, 'Cache-Control': 'public, max-age=3600', 'X-Content-Type-Options': 'nosniff' });
+      return fs.createReadStream(path.join(DATA, 'media', f.id)).pipe(res);
+    }
     if (url.pathname.startsWith('/api/media/') && req.method === 'GET') {
       const me = authUser(req); if (!me) return fail(res, 401, 'Нужен вход');
       const id = url.pathname.slice(11).replace(/[^a-f0-9]/g, '');
